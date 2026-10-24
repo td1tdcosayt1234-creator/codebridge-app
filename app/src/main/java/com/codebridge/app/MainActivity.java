@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -19,12 +20,23 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import com.google.android.gms.ads.AdError;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.FullScreenContentCallback;
+import com.google.android.gms.ads.LoadAdError;
+import com.google.android.gms.ads.MobileAds;
+import com.google.android.gms.ads.rewarded.RewardedAd;
+import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback;
 
 /**
  * CodeBridge Android app.
  * Server-based client of dash.roun.sryze.cc: Tasks, History, Profile, Earn.
- * The WebView appends a "CodeBridgeApp/1.0" marker to its User-Agent — the
- * server uses it to allow ad earning only from inside this app.
+ *
+ * Earn is ad-based: native AdMob rewarded ads. On /earn, the page's sponsor
+ * window.open() is intercepted and replaced by the rewarded flow; the page's
+ * own timer + POST /api/earn (start -> complete) stays untouched.
  */
 public class MainActivity extends Activity {
 
@@ -33,6 +45,12 @@ public class MainActivity extends Activity {
     private static final String[] LABELS = {"Tasks", "History", "Profile", "Earn"};
     private static final String[] ICONS = {"📋", "🕘", "👤", "⭐"};
     private static final String[] PATHS = {"/tasks", "/builds", "/settings", "/earn"};
+
+    // TODO: flip USE_TEST to false after the AdMob app review approves CodeBridge,
+    // then bump versionCode/versionName in AndroidManifest.xml.
+    private static final boolean USE_TEST = true;
+    private static final String TEST_REWARDED = "ca-app-pub-3940256099942544/5224354917";
+    private static final String PROD_REWARDED = "ca-app-pub-3123261757380037/5119738300";
 
     private static final int BG = 0xFF0B1020;
     private static final int NAV_BG = 0xFF101A33;
@@ -43,6 +61,22 @@ public class MainActivity extends Activity {
     private ProgressBar bar;
     private TextView[] tabs;
     private int selected = 0;
+
+    private RewardedAd rewarded;
+    private volatile boolean adLoading = false;
+
+    /** JS bridge used by the injected window.open hook on /earn. */
+    private class Bridge {
+        @JavascriptInterface
+        public void showRewarded() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    showAd();
+                }
+            });
+        }
+    }
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -73,6 +107,9 @@ public class MainActivity extends Activity {
         setContentView(root);
         setupWeb();
 
+        // Google Mobile Ads SDK; cache the first rewarded ad once ready.
+        MobileAds.initialize(this, status -> maybeLoadAd());
+
         if (saved != null) {
             web.restoreState(saved);
         } else {
@@ -85,9 +122,8 @@ public class MainActivity extends Activity {
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(NAV_BG);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(60));
-        nav.setLayoutParams(lp);
+        nav.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
 
         tabs = new TextView[PATHS.length];
         for (int i = 0; i < PATHS.length; i++) {
@@ -129,8 +165,14 @@ public class MainActivity extends Activity {
     private void open(int i) {
         selected = i;
         highlight();
-        bar.setVisibility(View.VISIBLE);
+        try {
+            bar.setVisibility(View.VISIBLE);
+        } catch (Exception ignored) {
+        }
         web.loadUrl(DASH + PATHS[i]);
+        if (i == PATHS.length - 1) {
+            maybeLoadAd(); // precache rewarded before the Earn tab opens
+        }
     }
 
     private void highlight() {
@@ -160,6 +202,8 @@ public class MainActivity extends Activity {
         cm.setAcceptThirdPartyCookies(web, true);
 
         web.setBackgroundColor(BG);
+        web.addJavascriptInterface(new Bridge(), "CodeBridge");
+
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
@@ -174,6 +218,9 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
+                if (url != null && url.contains("/earn")) {
+                    injectSponsorHook();
+                }
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -185,12 +232,68 @@ public class MainActivity extends Activity {
         });
     }
 
-    /** Site hosts stay in-app; everything external opens the browser. */
+    /** Swap the earn page's sponsor window.open by the native rewarded ad. */
+    private void injectSponsorHook() {
+        String js = "(function(){if(window.__cbHook)return;window.__cbHook=1;"
+                + "var om=window.open;window.open=function(u){try{var s=String(u);"
+                + "if(s.indexOf('uplcm')>-1){if(window.CodeBridge)window.CodeBridge.showRewarded();return null;}}"
+                + "catch(e){}return om.apply(window,arguments);};})();";
+        web.evaluateJavascript(js, null);
+        maybeLoadAd();
+    }
+
+    private void showAd() {
+        if (rewarded != null) {
+            final RewardedAd ad = rewarded;
+            rewarded = null; // one live ShowingSurface at a time
+            ad.setFullScreenContentCallback(new FullScreenContentCallback() {
+                @Override
+                public void onAdDismissedFullScreenContent() {
+                    maybeLoadAd();
+                }
+
+                @Override
+                public void onAdFailedToShowFullScreenContent(AdError error) {
+                    maybeLoadAd();
+                }
+            });
+            ad.show(this, rewardItem -> {
+                int coins = rewardItem.getAmount();
+                web.post(() -> web.evaluateJavascript(
+                        "if(window.__cbReward)window.__cbReward(" + coins + ");", null));
+                maybeLoadAd();
+            });
+        } else {
+            maybeLoadAd();
+            Toast.makeText(this, "Ad load hote ektu time lagbe — abar tap korun", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void maybeLoadAd() {
+        if (rewarded != null || adLoading) return;
+        adLoading = true;
+        String unit = USE_TEST ? TEST_REWARDED : PROD_REWARDED;
+        RewardedAd.load(this, unit, new AdRequest.Builder().build(), new RewardedAdLoadCallback() {
+            @Override
+            public void onAdLoaded(RewardedAd ad) {
+                rewarded = ad;
+                adLoading = false;
+            }
+
+            @Override
+            public void onAdFailedToLoad(LoadAdError error) {
+                adLoading = false;
+            }
+        });
+    }
+
+    /** Site hosts stay in-app; sponsor (Monetag) swallowed; others open browser. */
     private boolean external(String url) {
         Uri u = Uri.parse(url);
         String scheme = u.getScheme() == null ? "" : u.getScheme();
         if (scheme.equals("http") || scheme.equals("https")) {
             String host = u.getHost() == null ? "" : u.getHost();
+            if (host.contains("uplcm.com")) return true; // replaced by rewarded ad
             if (host.equals("roun.sryze.cc") || host.endsWith(".roun.sryze.cc")) {
                 return false; // keep in-app
             }

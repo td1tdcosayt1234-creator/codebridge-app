@@ -18,6 +18,11 @@
         android:usesCleartextTraffic="false"
         android:allowBackup="true">
 
+        <!-- AdMob application ID (required by the Google Mobile Ads SDK) -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-3123261757380037~5789907866" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

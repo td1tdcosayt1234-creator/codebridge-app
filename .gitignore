@@ -1,3 +1,6 @@
 build/
 obj/
 keys/
+.gradle/
+local.properties/
+*.iml
