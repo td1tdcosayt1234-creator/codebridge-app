@@ -183,15 +183,15 @@ public class MainActivity extends Activity {
         refresh.setTextColor(ACCENT);
         refresh.setTextSize(20);
         refresh.setPadding(dp(12), dp(6), dp(12), dp(6));
-        refresh.setBackgroundResource(android.R.attr.selectableItemBackground);
+        android.util.TypedValue rv = new android.util.TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackground, rv, true);
+        refresh.setBackgroundResource(rv.resourceId);
         refresh.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 reload();
             }
         });
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         header.addView(refresh, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return header;
