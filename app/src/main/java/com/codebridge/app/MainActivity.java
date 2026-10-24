@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -17,10 +18,13 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import com.google.android.gms.ads.AdError;
 import com.google.android.gms.ads.AdRequest;
@@ -31,35 +35,40 @@ import com.google.android.gms.ads.rewarded.RewardedAd;
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback;
 
 /**
- * CodeBridge Android app.
- * Server-based client of dash.roun.sryze.cc: Tasks, History, Profile, Earn.
- *
- * Earn is ad-based: native AdMob rewarded ads. On /earn, the page's sponsor
- * window.open() is intercepted and replaced by the rewarded flow; the page's
- * own timer + POST /api/earn (start -> complete) stays untouched.
+ * CodeBridge Android app — server-based client of dash.roun.sryze.cc.
+ * Tasks / History / Profile / Earn with native AdMob rewarded earn flow.
  */
 public class MainActivity extends Activity {
 
     private static final String DASH = "https://dash.roun.sryze.cc";
     private static final String UA_MARK = "CodeBridgeApp/1.0";
     private static final String[] LABELS = {"Tasks", "History", "Profile", "Earn"};
-    private static final String[] ICONS = {"📋", "🕘", "👤", "⭐"};
+    private static final int[] ICONS = {R.drawable.ic_tasks, R.drawable.ic_history,
+            R.drawable.ic_profile, R.drawable.ic_earn};
     private static final String[] PATHS = {"/tasks", "/builds", "/settings", "/earn"};
 
     // TODO: flip USE_TEST to false after the AdMob app review approves CodeBridge,
-    // then bump versionCode/versionName in AndroidManifest.xml.
+    // then bump versionCode/versionName in app/build.gradle.kts.
     private static final boolean USE_TEST = true;
     private static final String TEST_REWARDED = "ca-app-pub-3940256099942544/5224354917";
     private static final String PROD_REWARDED = "ca-app-pub-3123261757380037/5119738300";
 
     private static final int BG = 0xFF0B1020;
     private static final int NAV_BG = 0xFF101A33;
+    private static final int HAIRLINE = 0xFF18243E;
+    private static final int PILL = 0xFF1B2A4D;
     private static final int ACCENT = 0xFF22D3EE;
     private static final int IDLE = 0xFF8A94A6;
 
     private WebView web;
     private ProgressBar bar;
-    private TextView[] tabs;
+    private SwipeRefreshLayout swipe;
+    private LinearLayout[] navCols;
+    private ImageView[] navIcons;
+    private TextView[] navLabels;
+    private LinearLayout splash;
+    private int rippleRes;
+    private boolean splashGone = false;
     private int selected = 0;
 
     private RewardedAd rewarded;
@@ -87,21 +96,44 @@ public class MainActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
 
-        FrameLayout content = new FrameLayout(this);
+        root.addView(header());
+        root.addView(hairline());
+
+        swipe = new SwipeRefreshLayout(this);
+        swipe.setColorSchemeColors(ACCENT);
+        swipe.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
+            @Override
+            public void onRefresh() {
+                reload();
+            }
+        });
+        root.addView(swipe, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(BG);
 
         web = new WebView(this);
-        content.addView(web, new FrameLayout.LayoutParams(
+        frame.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.getProgressDrawable().setColorFilter(ACCENT, android.graphics.PorterDuff.Mode.SRC_ATOP);
         FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(3));
         barParams.gravity = Gravity.TOP;
         bar.setVisibility(View.GONE);
-        content.addView(bar, barParams);
+        frame.addView(bar, barParams);
 
-        root.addView(content, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (saved == null) {
+            splash = buildSplash();
+            frame.addView(splash, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+
+        swipe.addView(frame, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         root.addView(nav());
 
         setContentView(root);
@@ -112,26 +144,137 @@ public class MainActivity extends Activity {
 
         if (saved != null) {
             web.restoreState(saved);
+            splashGone = true;
         } else {
             web.loadUrl(DASH + PATHS[selected]);
-            highlight();
         }
+        highlight();
+    }
+
+    private LinearLayout header() {
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.setBackgroundColor(NAV_BG);
+        header.setPadding(dp(16), dp(11), dp(8), dp(11));
+
+        TextView star = new TextView(this);
+        star.setText("✦");
+        star.setTextColor(ACCENT);
+        star.setTextSize(15);
+        header.addView(star);
+
+        TextView title = new TextView(this);
+        title.setText("  CodeBridge");
+        title.setTextColor(0xFFFFFFFF);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextSize(16);
+        header.addView(title);
+
+        TextView url = new TextView(this);
+        url.setText("  dash.roun.sryze.cc");
+        url.setTextColor(IDLE);
+        url.setTextSize(10);
+        url.setLetterSpacing(0.02f);
+        header.addView(url);
+
+        TextView refresh = new TextView(this);
+        refresh.setText("⟳");
+        refresh.setTextColor(ACCENT);
+        refresh.setTextSize(20);
+        refresh.setPadding(dp(12), dp(6), dp(12), dp(6));
+        refresh.setBackgroundResource(android.R.attr.selectableItemBackground);
+        refresh.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                reload();
+            }
+        });
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        header.addView(refresh, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return header;
+    }
+
+    private View hairline() {
+        View line = new View(this);
+        line.setBackgroundColor(HAIRLINE);
+        line.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1))));
+        return line;
+    }
+
+    private LinearLayout buildSplash() {
+        LinearLayout s = new LinearLayout(this);
+        s.setOrientation(LinearLayout.VERTICAL);
+        s.setGravity(Gravity.CENTER);
+        s.setBackgroundColor(BG);
+
+        TextView logo = new TextView(this);
+        logo.setText("✦ CodeBridge");
+        logo.setTextColor(ACCENT);
+        logo.setTextSize(26);
+        logo.setTypeface(Typeface.DEFAULT_BOLD);
+        logo.setLetterSpacing(0.03f);
+        s.addView(logo);
+
+        TextView sub = new TextView(this);
+        sub.setText("dash.roun.sryze.cc");
+        sub.setTextColor(IDLE);
+        sub.setTextSize(11);
+        sub.setLetterSpacing(0.08f);
+        s.addView(sub, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        ProgressBar spin = new ProgressBar(this);
+        spin.getIndeterminateDrawable().setColorFilter(ACCENT, android.graphics.PorterDuff.Mode.SRC_ATOP);
+        LinearLayout.LayoutParams spinLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        spinLp.topMargin = dp(22);
+        s.addView(spin, spinLp);
+        return s;
     }
 
     private LinearLayout nav() {
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(NAV_BG);
-        nav.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+        nav.setPadding(dp(4), dp(7), dp(4), dp(9));
 
-        tabs = new TextView[PATHS.length];
+        navCols = new LinearLayout[PATHS.length];
+        navIcons = new ImageView[PATHS.length];
+        navLabels = new TextView[PATHS.length];
+
         for (int i = 0; i < PATHS.length; i++) {
             final int index = i;
             LinearLayout col = new LinearLayout(this);
             col.setOrientation(LinearLayout.VERTICAL);
             col.setGravity(Gravity.CENTER);
-            col.setPadding(0, dp(6), 0, dp(6));
+            col.setPadding(0, dp(7), 0, dp(7));
+
+            ImageView ic = new ImageView(this);
+            ic.setImageResource(ICONS[i]);
+            ic.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            col.addView(ic, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+            TextView label = new TextView(this);
+            label.setText(LABELS[i].toUpperCase());
+            label.setTextSize(10);
+            label.setLetterSpacing(0.06f);
+            label.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams labelLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            labelLp.topMargin = dp(4);
+            col.addView(label, labelLp);
+
+            // touch feedback
+            android.util.TypedValue tv = new android.util.TypedValue();
+            getTheme().resolveAttribute(android.R.attr.selectableItemBackground, tv, true);
+            rippleRes = tv.resourceId;
+            col.setBackgroundResource(rippleRes);
+
             col.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -139,27 +282,21 @@ public class MainActivity extends Activity {
                 }
             });
 
-            TextView ic = new TextView(this);
-            ic.setText(ICONS[i]);
-            ic.setTextSize(19);
-            ic.setGravity(Gravity.CENTER);
-            col.addView(ic, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-            TextView label = new TextView(this);
-            label.setText(LABELS[i]);
-            label.setTextSize(11);
-            label.setTypeface(Typeface.DEFAULT_BOLD);
-            label.setGravity(Gravity.CENTER);
-            label.setTextColor(IDLE);
-            col.addView(label, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
             nav.addView(col, new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-            tabs[i] = label;
+            navCols[i] = col;
+            navIcons[i] = ic;
+            navLabels[i] = label;
         }
         return nav;
+    }
+
+    private void reload() {
+        try {
+            bar.setVisibility(View.VISIBLE);
+        } catch (Exception ignored) {
+        }
+        web.reload();
     }
 
     private void open(int i) {
@@ -175,9 +312,28 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** Keep the bottom nav in sync with whatever page the WebView shows. */
+    private void syncFromUrl(String url) {
+        if (url == null) return;
+        String clean = url.replaceFirst("https?://dash\\.roun\\.sryze\\.cc", "").split("\\?")[0];
+        for (int i = 0; i < PATHS.length; i++) {
+            if (clean.startsWith(PATHS[i])) {
+                if (selected != i) {
+                    selected = i;
+                    highlight();
+                }
+                return;
+            }
+        }
+    }
+
     private void highlight() {
-        for (int i = 0; i < tabs.length; i++) {
-            tabs[i].setTextColor(i == selected ? ACCENT : IDLE);
+        for (int i = 0; i < navCols.length; i++) {
+            boolean sel = i == selected;
+            navIcons[i].setColorFilter(sel ? ACCENT : IDLE, android.graphics.PorterDuff.Mode.SRC_ATOP);
+            navLabels[i].setTextColor(sel ? ACCENT : IDLE);
+            navLabels[i].setTypeface(sel ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            navCols[i].setBackgroundResource(sel ? R.drawable.nav_pill : rippleRes);
         }
     }
 
@@ -218,6 +374,9 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 CookieManager.getInstance().flush();
+                if (swipe != null) swipe.setRefreshing(false);
+                hideSplash();
+                syncFromUrl(url);
                 if (url != null && url.contains("/earn")) {
                     injectSponsorHook();
                 }
@@ -230,6 +389,12 @@ public class MainActivity extends Activity {
                 bar.setVisibility(progress >= 100 ? View.GONE : View.VISIBLE);
             }
         });
+    }
+
+    private void hideSplash() {
+        if (splashGone || splash == null) return;
+        splashGone = true;
+        splash.setVisibility(View.GONE);
     }
 
     /** Swap the earn page's sponsor window.open by the native rewarded ad. */
