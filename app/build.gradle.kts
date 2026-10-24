@@ -16,7 +16,7 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file("../../keys/codebridge.keystore")
+            storeFile = file("../keys/codebridge.keystore")
             storePassword = "codebridge2026"
             keyAlias = "codebridge"
             keyPassword = "codebridge2026"
