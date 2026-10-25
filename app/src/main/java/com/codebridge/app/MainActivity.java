@@ -73,6 +73,8 @@ public class MainActivity extends Activity {
 
     private RewardedAd rewarded;
     private volatile boolean adLoading = false;
+    /** Set when the user requested an ad while none was cached yet. */
+    private volatile boolean pendingShow = false;
 
     /** JS bridge used by the injected window.open hook on /earn. */
     private class Bridge {
@@ -429,8 +431,11 @@ public class MainActivity extends Activity {
                 maybeLoadAd();
             });
         } else {
+            // Ad not cached yet — remember the intent; it auto-opens the
+            // moment the load finishes, so the user never taps twice.
+            pendingShow = true;
             maybeLoadAd();
-            Toast.makeText(this, "Ad load hote ektu time lagbe — abar tap korun", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Ad load hochhe — ektu pore auto khule jabe", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -443,6 +448,10 @@ public class MainActivity extends Activity {
             public void onAdLoaded(RewardedAd ad) {
                 rewarded = ad;
                 adLoading = false;
+                if (pendingShow) {
+                    pendingShow = false;
+                    runOnUiThread(() -> showAd());
+                }
             }
 
             @Override
